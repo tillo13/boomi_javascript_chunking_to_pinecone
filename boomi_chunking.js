@@ -12,6 +12,11 @@ for(var i = 0; i < dataContext.getDataCount(); i++ ) {
     // Get Dynamic Document Property DDP_incoming_text
     var propValue = props.getProperty("document.dynamic.userdefined.DDP_incoming_text");
     
+    // Check if the property is blank or null
+    if(!propValue || propValue.trim() === '') {
+        propValue = "default"; // Replace "default" with your desired default value
+    }
+
     // Append XYZ to the retrieved value
     var newValue = propValue + "XYZ";
 

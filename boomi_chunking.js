@@ -27,105 +27,93 @@ try {
     var maxCharsValue = props.getProperty("document.dynamic.userdefined.DDP_max_characters");
     var MaxCharsPerChunk = 1500;
     if (!isNaN(maxCharsValue) && parseInt(maxCharsValue) >= 1) {
-      MaxCharsPerChunk = parseInt(maxCharsValue);
-    }
+      MaxCharsPerChunk = parseInt(maxCharsValue);}
 
-    // Begin Chunking Logic
-    var title = "Your Title Here"; // Replace with your desired title or dynamic process property
-    var chunks = [];
+// Begin Chunking Logic
+var title = "Your Title Here"; // Replace with your desired title or dynamic process property
+var chunks = [];
 
-    // Splitting text function
-    function splitText() {
-      for (var index = 0; index < propValue.length; index += MaxCharsPerChunk) {
-        chunks.push({
-          Start: index,
-          End: index + MaxCharsPerChunk,
-          Title: title,
-          Text: propValue.slice(index, index + MaxCharsPerChunk),
-        });
-      }
-    }
+// Splitting text function
+function splitText() {
+  for (var index = 0; index < propValue.length; index += MaxCharsPerChunk) {
+    chunks.push({
+      Start: index,
+      End: index + MaxCharsPerChunk,
+      Title: title,
+      Text: propValue.slice(index, index + MaxCharsPerChunk),
+    });
+  }
+}
 
-    if (MaxCharsPerChunk === 1 || !propValue.match(/[\.\!\?]/g)) {
+if (MaxCharsPerChunk === 1 || !propValue.match(/[\.\!\?]/g)) {
+  splitText();
+} else {
+  try {
+    var sentences = propValue.match(/[^\.!\?]+[\.!\?]+/g);
+
+    if (sentences == null) {
       splitText();
     } else {
-      try {
-        // Attempt to split the text into sentences
-        var sentences = propValue.match(/[^\.!\?]+[\.!\?]+/g);
 
-        // If no sentences found, split by characters instead
-        if (sentences == null) {
-          splitText();
-        } else {
-          // If sentences found, split with preference on sentences
-          var chunkStart = 0;
+      var chunkStart = 0;
+      while (chunkStart < sentences.length) {
+        var charCount = 0;
+        var chunkText = "";
+        var chunkSentences = 0;
 
-          while (chunkStart < sentences.length) {
-            var charCount = 0;
-            var chunkText = "";
-            var chunkSentences = 0;
+        for (var j = chunkStart; j < sentences.length && charCount < MaxCharsPerChunk; j++) {
+          var sentence = sentences[j];
+          var sentenceCharCount = sentence.length;
 
-            for (var j = chunkStart; j < sentences.length && charCount < MaxCharsPerChunk; j++) {
-              var sentence = sentences[j];
-              var sentenceCharCount = sentence.length;
+          if (sentenceCharCount > MaxCharsPerChunk) {
+            continue;
+          }
 
-              if (sentenceCharCount > MaxCharsPerChunk) {
-                continue; // Skip sentence if longer than MaxCharsPerChunk.
-              }
-
-              if (charCount + sentenceCharCount <= MaxCharsPerChunk) {
-                charCount += sentenceCharCount;
-                chunkText += " " + sentence;
-                chunkSentences++;
-              } else {
-                break;
-              }
-            }
-
-            var trimmedText = chunkText.trim();
-
-            if (trimmedText.length > 0) {
-              chunks.push({
-                Start: chunkStart,
-                End: chunkStart + chunkSentences,
-                Title: title,
-                Text: trimmedText,
-              });
-            }
-
-            // Calculate stride dynamically based on chunk sentences.
-            var sentenceStride = Math.floor(chunkSentences / 5);
-            if (sentenceStride == 0) {
-              sentenceStride = 1;
-            }
-
-            // Move chunkStart forward by sentenceStride.
-            chunkStart += sentenceStride;
+          if (charCount + sentenceCharCount <= MaxCharsPerChunk) {
+            charCount += sentenceCharCount;
+            chunkText += " " + sentence;
+            chunkSentences++;
+          } else {
+            break;
           }
         }
-      } catch (e) {
-        // If an error occurs during splitting, split by characters instead
-        splitText();
+
+        var trimmedText = chunkText.trim();
+
+        if (trimmedText.length > 0) {
+          chunks.push({
+            Start: chunkStart,
+            End: chunkStart + chunkSentences,
+            Title: title,
+            Text: trimmedText,
+          });
+        }
+
+        chunkStart += chunkSentences;
       }
     }
-
-    // Create separate documents for each chunk
-    for (var chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
-      var chunk = chunks[chunkIndex];
-      var chunkText = chunk.Text;
-      var byteArray = new java.lang.String(chunkText).getBytes(StandardCharsets.UTF_8);
-      var chunkStream = new ByteArrayInputStream(byteArray);
-
-      // Set chunk.Text as the value for DDP_outgoing_text
-      var outputProps = new java.util.Properties();
-      outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunkText);
-
-      dataContext.storeStream(chunkStream, outputProps);
-    }
-
-    // End Chunking Logic
+  } catch (e) {
+    splitText();
   }
+}
+
+// Create separate documents for each chunk
+for (var chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+  var chunk = chunks[chunkIndex];
+  var chunkText = chunk.Text;
+  var byteArray = new java.lang.String(chunkText).getBytes(StandardCharsets.UTF_8);
+  var chunkStream = new ByteArrayInputStream(byteArray);
+
+  // Set chunk.Text as the value for DDP_outgoing_text
+  var outputProps = new java.util.Properties();
+  outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunkText);
+
+  dataContext.storeStream(chunkStream, outputProps);
+}
+
+// End Chunking Logic
+}
 } catch (error) {
-  // Catch any unexpected errors
-  logger.severe("An error occurred during script execution: " + error);
+// Catch any unexpected errors
+logger.severe("An error occurred during script execution: " + error);
 }

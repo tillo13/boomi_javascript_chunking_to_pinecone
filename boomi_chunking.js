@@ -1,10 +1,14 @@
 load("nashorn:mozilla_compat.js");
 importClass(com.boomi.execution.ExecutionUtil);
 importClass(java.io.ByteArrayInputStream);
-importClass(java.util.Properties);
+importClass(java.io.ByteArrayOutputStream);
+importClass(java.io.OutputStreamWriter);
 importClass(java.nio.charset.StandardCharsets);
+importClass(java.util.Properties);
 
 var logger = java.util.logging.Logger.getLogger("com.boomi.process.script");
+var csvOutput = new java.lang.StringBuilder();
+var csvDelimiter = ",";
 
 function escapeSlackJson(input) {
     input = input.replace(/["“”]/g, "'");
@@ -15,6 +19,22 @@ function escapeSlackJson(input) {
         .replace(/\n/g, '\\n')
         .replace(/\r/g, '')
         .replace(/\s+/g, ' ');
+}
+
+function generateStartingName(namespace) {
+    var abbreviation = namespace.split(/_|-|\s+/).map(function(word) {
+        return word.charAt(0);
+    }).join('');
+
+    if (abbreviation.length < 3) {
+        abbreviation += new Array(3 - abbreviation.length + 1).join("_");
+    }
+
+    if (abbreviation === "") {
+        abbreviation = "undefined";
+    }
+
+    return abbreviation;
 }
 
 try {
@@ -36,6 +56,12 @@ try {
         if (!isNaN(maxCharsValue) && parseInt(maxCharsValue) >= 1) {
             MaxCharsPerChunk = parseInt(maxCharsValue);
         }
+
+        var namespace = props.getProperty("document.dynamic.userdefined.DDP_NAMESPACE");
+        if (!namespace || namespace.trim() === "") {
+            namespace = "undefined";
+        }
+        var startingName = generateStartingName(namespace);
 
         var chunks = [];
 
@@ -97,6 +123,8 @@ try {
             }
         }
 
+        var runningInputLength = 0;
+
         for (var chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
             var chunk = chunks[chunkIndex];
             var jsonPayload = JSON.stringify(chunk);
@@ -104,12 +132,14 @@ try {
             var chunkStream = new ByteArrayInputStream(byteArray);
 
             var outputProps = new java.util.Properties();
-            outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunk.input); // Store only the input part of the embeddings JSON
-            // Add DDP_vector_name property with the new naming convention
-            var vectorId = "LOTR-" + String("000" + (chunkIndex + 1)).slice(-3) + "-" + String("00000" + (chunkIndex * MaxCharsPerChunk)).slice(-5);
+            outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunk.input);
+            // Add DDP_vector_name property with the new naming convention using startingName and runningInputLength
+            var vectorId = startingName + "-" + String("000" + (chunkIndex + 1)).slice(-3) + "-" + String("00000" + runningInputLength).slice(-5);
             outputProps.put("document.dynamic.userdefined.DDP_vector_name", vectorId);
 
             dataContext.storeStream(chunkStream, outputProps);
+
+            runningInputLength += chunk.input.length;
         }
     }
 } catch (error) {

@@ -4,6 +4,8 @@ importClass(java.io.ByteArrayInputStream);
 importClass(java.util.Properties);
 importClass(java.nio.charset.StandardCharsets);
 
+var logger = java.util.logging.Logger.getLogger("com.boomi.process.script");
+
 function escapeSlackJson(input) {
     input = input.replace(/["“”]/g, "'");
     input = input.replace(/[‘’]/g, "'");
@@ -55,7 +57,6 @@ try {
                 if (sentences == null) {
                     splitText();
                 } else {
-
                     var chunkStart = 0;
                     while (chunkStart < sentences.length) {
                         var charCount = 0;
@@ -103,11 +104,14 @@ try {
             var chunkStream = new ByteArrayInputStream(byteArray);
 
             var outputProps = new java.util.Properties();
-            outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", jsonPayload);
+            outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunk.input); // Store only the input part of the embeddings JSON
+            // Add DDP_vector_name property with the new naming convention
+            var vectorId = "LOTR-" + String("000" + (chunkIndex + 1)).slice(-3) + "-" + String("00000" + (chunkIndex * MaxCharsPerChunk)).slice(-5);
+            outputProps.put("document.dynamic.userdefined.DDP_vector_name", vectorId);
 
             dataContext.storeStream(chunkStream, outputProps);
         }
     }
 } catch (error) {
-    logger.severe("An error occurred during script execution: " + error);
+    java.lang.System.err.println("An error occurred during script execution: " + error);
 }

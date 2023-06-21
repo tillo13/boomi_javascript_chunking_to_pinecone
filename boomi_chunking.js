@@ -37,10 +37,8 @@ var chunks = [];
 function splitText() {
   for (var index = 0; index < propValue.length; index += MaxCharsPerChunk) {
     chunks.push({
-      Start: index,
-      End: index + MaxCharsPerChunk,
-      Title: title,
-      Text: propValue.slice(index, index + MaxCharsPerChunk),
+      model: "text-embedding-ada-002",
+      input: propValue.slice(index, index + MaxCharsPerChunk),
     });
   }
 }
@@ -82,10 +80,8 @@ if (MaxCharsPerChunk === 1 || !propValue.match(/[\.\!\?]/g)) {
 
         if (trimmedText.length > 0) {
           chunks.push({
-            Start: chunkStart,
-            End: chunkStart + chunkSentences,
-            Title: title,
-            Text: trimmedText,
+            model: "text-embedding-ada-002",
+            input: trimmedText,
           });
         }
 
@@ -100,15 +96,11 @@ if (MaxCharsPerChunk === 1 || !propValue.match(/[\.\!\?]/g)) {
 // Create separate documents for each chunk
 for (var chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
   var chunk = chunks[chunkIndex];
-  var chunkText = chunk.Text;
-  var byteArray = new java.lang.String(chunkText).getBytes(StandardCharsets.UTF_8);
+  var jsonPayload = JSON.stringify(chunk);
+  var byteArray = new java.lang.String(jsonPayload).getBytes(StandardCharsets.UTF_8);
   var chunkStream = new ByteArrayInputStream(byteArray);
 
-  // Set chunk.Text as the value for DDP_outgoing_text
-  var outputProps = new java.util.Properties();
-  outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunkText);
-
-  dataContext.storeStream(chunkStream, outputProps);
+  dataContext.storeStream(chunkStream, props);
 }
 
 // End Chunking Logic

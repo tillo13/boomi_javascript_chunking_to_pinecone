@@ -134,7 +134,7 @@ try {
             var outputProps = new java.util.Properties();
             outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunk.input);
             // Add DDP_vector_name property with the new naming convention using startingName and runningInputLength
-            var vectorId = startingName + "-" + String("000" + (chunkIndex + 1)).slice(-3) + "-" + String("00000" + runningInputLength).slice(-5);
+            var vectorId = startingName + "-" + (chunkIndex + 1) + "-" + runningInputLength;
             outputProps.put("document.dynamic.userdefined.DDP_vector_name", vectorId);
 
             dataContext.storeStream(chunkStream, outputProps);

@@ -1,0 +1,489 @@
+<?xml version="1.0" encoding="UTF-8"?><Component xmlns:bns="http://api.platform.boomi.com/" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" componentId="0776b143-4d4a-4d9c-a3a6-7301dbbe6230" createdBy="andy.tillo@gmail.com" createdDate="2023-06-20T22:02:40Z" currentVersion="true" deleted="false" folderFullPath="Boomi_AndyTillo/2023june20 long term memory/chunking" folderId="Rjo1OTQ2NDQz" folderName="chunking" modifiedBy="andy.tillo@gmail.com" modifiedDate="2023-06-22T05:35:14Z" name="chunk through large data sets with javascript" type="process" version="131">
+  <bns:encryptedValues/>
+  <bns:description/>
+  <bns:object>
+    <process allowSimultaneous="false" enableUserLog="false" processLogOnErrorOnly="false" purgeDataImmediately="false" updateRunDates="true" workload="general">
+      <shapes>
+        <shape image="start" name="shape1" shapetype="start" userlabel="" x="48.0" y="46.0">
+          <configuration>
+            <noaction/>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape1.dragpoint1" toShape="shape5" x="224.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="dataprocess_icon" name="shape2" shapetype="dataprocess" userlabel="chunk with javascript" x="624.0" y="48.0">
+          <configuration>
+            <dataprocess>
+              <step index="1" key="1" name="Custom Scripting" processtype="12">
+                <dataprocessscript language="javascript" useCache="true">
+                  <script>load("nashorn:mozilla_compat.js");
+importClass(com.boomi.execution.ExecutionUtil);
+importClass(java.io.ByteArrayInputStream);
+importClass(java.io.ByteArrayOutputStream);
+importClass(java.io.OutputStreamWriter);
+importClass(java.nio.charset.StandardCharsets);
+importClass(java.util.Properties);
+
+var logger = java.util.logging.Logger.getLogger("com.boomi.process.script");
+var csvOutput = new java.lang.StringBuilder();
+var csvDelimiter = ",";
+
+function escapeSlackJson(input) {
+    input = input.replace(/["“”]/g, "'");
+    input = input.replace(/[‘’]/g, "'");
+    input = input.replace(/[—–]/g, "-");
+    input = input.replace(/…/g, "...");
+    return input.replace(/\\/g, '\\\\')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '')
+        .replace(/\s+/g, ' ');
+}
+
+function generateStartingName(namespace) {
+    var abbreviation = namespace.split(/_|-|\s+/).map(function(word) {
+        return word.charAt(0);
+    }).join('');
+
+    if (abbreviation.length &lt; 3) {
+        abbreviation += new Array(3 - abbreviation.length + 1).join("_");
+    }
+
+    if (abbreviation === "") {
+        abbreviation = "undefined";
+    }
+
+    return abbreviation;
+}
+
+try {
+    for (var i = 0; i &lt; dataContext.getDataCount(); i++) {
+        var is = dataContext.getStream(i);
+        var props = dataContext.getProperties(i);
+
+        var propValue = props.getProperty("document.dynamic.userdefined.DDP_incoming_text");
+
+        if (!propValue || propValue.trim() === "") {
+            propValue = "default";
+        }
+
+        propValue = escapeSlackJson(propValue);
+        propValue = propValue.replace(/[\r\n]+/g, ' ');
+
+        var maxCharsValue = props.getProperty("document.dynamic.userdefined.DDP_max_characters");
+        var MaxCharsPerChunk = 1500;
+        if (!isNaN(maxCharsValue) &amp;&amp; parseInt(maxCharsValue) &gt;= 1) {
+            MaxCharsPerChunk = parseInt(maxCharsValue);
+        }
+
+        var namespace = props.getProperty("document.dynamic.userdefined.DDP_NAMESPACE");
+        if (!namespace || namespace.trim() === "") {
+            namespace = "undefined";
+        }
+        var startingName = generateStartingName(namespace);
+
+        var chunks = [];
+
+        function splitText() {
+            for (var index = 0; index &lt; propValue.length; index += MaxCharsPerChunk) {
+                chunks.push({
+                    model: "text-embedding-ada-002",
+                    input: propValue.slice(index, index + MaxCharsPerChunk),
+                });
+            }
+        }
+
+        if (MaxCharsPerChunk === 1 || !propValue.match(/[.!?]/g)) {
+            splitText();
+        } else {
+            try {
+                var sentences = propValue.match(/[^.!?]+[.!?]+/g);
+
+                if (sentences == null) {
+                    splitText();
+                } else {
+                    var chunkStart = 0;
+                    while (chunkStart &lt; sentences.length) {
+                        var charCount = 0;
+                        var chunkText = "";
+                        var chunkSentences = 0;
+
+                        for (var j = chunkStart; j &lt; sentences.length &amp;&amp; charCount &lt; MaxCharsPerChunk; j++) {
+                            var sentence = sentences[j];
+                            var sentenceCharCount = sentence.length;
+
+                            if (sentenceCharCount &gt; MaxCharsPerChunk) {
+                                continue;
+                            }
+
+                            if (charCount + sentenceCharCount &lt;= MaxCharsPerChunk) {
+                                charCount += sentenceCharCount;
+                                chunkText += " " + sentence;
+                                chunkSentences++;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        var trimmedText = chunkText.trim();
+
+                        if (trimmedText.length &gt; 0) {
+                            chunks.push({
+                                model: "text-embedding-ada-002",
+                                input: trimmedText,
+                            });
+                        }
+
+                        chunkStart += chunkSentences;
+                    }
+                }
+            } catch (e) {
+                splitText();
+            }
+        }
+
+        var runningInputLength = 0;
+
+        for (var chunkIndex = 0; chunkIndex &lt; chunks.length; chunkIndex++) {
+            var chunk = chunks[chunkIndex];
+            var jsonPayload = JSON.stringify(chunk);
+            var byteArray = new java.lang.String(jsonPayload).getBytes(StandardCharsets.UTF_8);
+            var chunkStream = new ByteArrayInputStream(byteArray);
+
+            var outputProps = new java.util.Properties();
+            outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunk.input);
+            // Add DDP_vector_name property with the new naming convention using startingName and runningInputLength
+            var vectorId = startingName + "-" + (chunkIndex + 1) + "-" + runningInputLength;
+            outputProps.put("document.dynamic.userdefined.DDP_vector_name", vectorId);
+
+            dataContext.storeStream(chunkStream, outputProps);
+
+            runningInputLength += chunk.input.length;
+        }
+    }
+} catch (error) {
+    java.lang.System.err.println("An error occurred during script execution: " + error);
+}</script>
+                </dataprocessscript>
+              </step>
+            </dataprocess>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape2.dragpoint1" toShape="shape7" x="800.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="notify_icon" name="shape3" shapetype="notify" userlabel="show DDPs the javascript made: " x="1200.0" y="48.0">
+          <configuration>
+            <notify disableEvent="true" enableUserLog="false" perExecution="false" title="">
+              <notifyMessage>DDP_outgoing_text: {1}
+
+DDP_vector_name: {2}
+
+DDP_vector_list: {3}</notifyMessage>
+              <notifyMessageLevel>INFO</notifyMessageLevel>
+              <notifyParameters>
+                <parametervalue key="0" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_outgoing_text" propertyName="Dynamic Document Property - DDP_outgoing_text"/>
+                </parametervalue>
+                <parametervalue key="1" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_vector_name" propertyName="Dynamic Document Property - DDP_vector_name"/>
+                </parametervalue>
+                <parametervalue key="2" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_vector_list" propertyName="Dynamic Document Property - DDP_vector_list"/>
+                </parametervalue>
+              </notifyParameters>
+            </notify>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape3.dragpoint1" toShape="shape21" x="1376.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="documentproperties_icon" name="shape5" shapetype="documentproperties" userlabel="3351 chars (GoT)" x="240.0" y="48.0">
+          <configuration>
+            <documentproperties>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_incoming_text" persist="false" propertyId="dynamicdocument.DDP_incoming_text" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="1" valueType="static">
+                    <staticparameter staticproperty="T  he sun had broken through near midday, after seven days of dark skies and snow urries.  Some of the drifts were higher than a man, but the stewards had been shoveling all day and the paths were as clean as they were like to get.  Re ections glimmered o the Wall, every crack and crevice glittering pale blue.  Seven hundred feet up, Jon Snow stood looking down upon the haunted forest.  A north wind swirled through the trees below, sending thin white plumes of snow crystals ying from the highest branches, like icy banners.  Elsewise nothing moved.  Not a sign of life.  That was not entirely reassuring.  It was not the living that he feared.  Even so … The sun is out.  The snow has stopped.  It may be a moon’s turn before we have another chance as good.  It may be a season.  “Have Emmett assemble his recruits,” he told Dolorous Edd.  “We’ll want an escort.  Ten rangers, armed with dragonglass.  I want them ready to leave within the hour.” “Aye, m’lord.  And to command?” “That would be me.”  Edd’s mouth turned down even more than usual.  “Some might think it better if the lord commander stayed safe and warm south of the Wall.  Not that I’d say such myself, but some might.”  Jon smiled.  “Some had best not say so in my presence.”  A sudden gust of wind set Edd’s cloak to apping noisily.  “Best go down, m’lord.  This wind’s like to push us o the Wall, and I never did learn the knack of ying.”   They rode the winch lift back to the ground.  The wind was gusting, cold as the breath of the ice dragon in the tales Old Nan had told when Jon was a boy.  The heavy cage was swaying.  From time to time it scraped against the Wall, starting small crystalline showers of ice that sparkled in the sunlight as they fell, like shards of broken glass.  Glass, Jon mused, might be of use here.  Castle Black needs its own glass gardens, like the ones at Winterfell.  We could grow vegetables even in the deep of winter.  The best glass came from Myr, but a good clear pane was worth its weight in spice, and green and yellow glass would not work as well.  What we need is gold.  With enough coin, we could buy ’prentice glassblowers and glaziers in Myr, bring them north, o er them their freedom for teaching their art to some of our recruits.  That would be the way to go about it.  If we had the gold.  Which we do not.  At the base of the Wall he found Ghost rolling in a snowbank.  The big white direwolf seemed to love fresh snow.  When he saw Jon he bounded back onto his feet and shook himself o .  Dolorous Edd said, “He’s going with you?” “He is.” “A clever wolf, him.  And me?” “You’re not.” “A clever lord, you.  Ghost’s the better choice.  I don’t have the teeth for biting wildlings anymore.” “If the gods are good, we won’t encounter any wildlings.  I’ll want the grey gelding.”  Word spread fast at Castle Black.  Edd was still saddling the grey when Bowen Marsh stomped across the yard to confront Jon at the stables.  “My lord, I wish you would reconsider.  The new men can take their vows in the sept as easily.” “The sept is home to the new gods.  The old gods live in the wood, and those who honor them say their words amongst the weirwoods.  You know that as well as I.” “Satin comes from Oldtown, and Arron and Emrick from the westerlands.  The old gods are not their gods.”  “I do not tell men which god to worship.  They were free to choose the Seven or the red woman’s Lord of Light."/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_max_characters" persist="false" propertyId="dynamicdocument.DDP_max_characters" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="2" valueType="static">
+                    <staticparameter staticproperty="100"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+            </documentproperties>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape5.dragpoint1" toShape="shape20" x="416.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="documentproperties_icon" name="shape7" shapetype="documentproperties" userlabel="count docs" x="816.0" y="48.0">
+          <configuration>
+            <documentproperties>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_count_docs" persist="false" propertyId="dynamicdocument.DDP_count_docs" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="1" valueType="execution">
+                    <executionparameter executionproperty="Document Count"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+            </documentproperties>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape7.dragpoint1" toShape="shape33" x="992.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="connectoraction_icon" name="shape10" shapetype="connectoraction" userlabel="" x="1968.0" y="48.0">
+          <configuration>
+            <connectoraction actionType="Get" allowDynamicCredentials="NONE" connectionId="aa94de7a-98f4-4155-8b9a-ae699b9f2f6a" connectorType="http" hideSettings="false" operationId="3adcf0ee-2e0b-4c05-bb01-0f9565fb567d" parameter-profile="EMBEDDED|HttpParameterChooser|3adcf0ee-2e0b-4c05-bb01-0f9565fb567d">
+              <parameters/>
+              <dynamicProperties/>
+            </connectoraction>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape10.dragpoint1" toShape="shape32" x="2144.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="map_icon" name="shape8" shapetype="map" userlabel="" x="2544.0" y="48.0">
+          <configuration>
+            <map mapId="c4bd2453-2c21-4411-9608-5119a9a677f5"/>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape8.dragpoint1" toShape="shape9" x="2720.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="connectoraction_icon" name="shape9" shapetype="connectoraction" userlabel="" x="2736.0" y="48.0">
+          <configuration>
+            <connectoraction actionType="Send" allowDynamicCredentials="NONE" connectionId="fef7d9f8-8fa4-493d-9cf9-1e58fa6bb31e" connectorType="http" hideSettings="false" operationId="a36c1ca7-9afc-4416-8cb8-69b9fddec22c" parameter-profile="EMBEDDED|HttpParameterChooser|a36c1ca7-9afc-4416-8cb8-69b9fddec22c">
+              <parameters/>
+              <dynamicProperties/>
+            </connectoraction>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape9.dragpoint1" toShape="shape11" x="2912.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="stop_icon" name="shape11" shapetype="stop" userlabel="" x="2928.0" y="48.0">
+          <configuration>
+            <stop continue="true"/>
+          </configuration>
+          <dragpoints/>
+        </shape>
+        <shape image="notify_icon" name="shape16" shapetype="notify" userlabel="show full JSON to openAI" x="1584.0" y="48.0">
+          <configuration>
+            <notify disableEvent="true" enableUserLog="false" perExecution="false" title="">
+              <notifyMessage>{1}</notifyMessage>
+              <notifyMessageLevel>INFO</notifyMessageLevel>
+              <notifyParameters>
+                <parametervalue key="0" valueType="current"/>
+              </notifyParameters>
+            </notify>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape16.dragpoint1" toShape="shape34" x="1760.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="documentproperties_icon" name="shape20" shapetype="documentproperties" userlabel="Sets system message, namespace, cleaned user prompt, pinecone key (Set your pinecone API key in the process prop)" x="432.0" y="48.0">
+          <configuration>
+            <documentproperties>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_SYSTEM_MESSAGE" persist="false" propertyId="dynamicdocument.DDP_SYSTEM_MESSAGE" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="5" valueType="static">
+                    <staticparameter staticproperty="You are a helpful assistant. The chat history that you see includes historical conversations that you've had with a given user prior to the immediate current conversation. If you do see something specifically relevant to their current message in the historical messages, please call out that you are remembering that from elsewhere. Messages that precede the user statement \&quot;Ok now on to the current conversation\&quot; are from historical conversations and messages that come after that statement are part of the current dialogue. "/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_NAMESPACE" persist="false" propertyId="dynamicdocument.DDP_NAMESPACE" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="6" valueType="static">
+                    <staticparameter staticproperty="lord_of_the_rings"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - Api-key" persist="false" propertyId="dynamicdocument.Api-key" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="8" valueType="definedparameter">
+                    <definedprocessparameter componentId="f01b53ab-9e9e-4310-9c59-26a9bb7841bb" componentName="MemoryBot Props" propertyKey="a4f6cf48-1d15-4e4c-87f7-78386365f090" propertyLabel="pinecone_api_key"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_MESSAGE_TS" persist="false" propertyId="dynamicdocument.DDP_MESSAGE_TS" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="9" valueType="date">
+                    <dateparameter dateparametertype="current" datetimemask="yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_USER_MESSAGE" persist="false" propertyId="dynamicdocument.DDP_USER_MESSAGE" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="10" valueType="track">
+                    <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_outgoing_text" propertyName="Dynamic Document Property - DDP_outgoing_text"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+            </documentproperties>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape20.dragpoint1" toShape="shape2" x="608.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="message_icon" name="shape21" shapetype="message" userlabel="" x="1392.0" y="48.0">
+          <configuration>
+            <message combined="false">
+              <msgTxt>'{
+"model":"text-embedding-ada-002",
+"input":"'{1}'"
+}</msgTxt>
+              <msgParameters>
+                <parametervalue key="0" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_outgoing_text" propertyName="Dynamic Document Property - DDP_outgoing_text"/>
+                </parametervalue>
+              </msgParameters>
+            </message>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape21.dragpoint1" toShape="shape16" x="1568.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="documentproperties_icon" name="shape32" shapetype="documentproperties" userlabel="set timestamp as current ingest time" x="2160.0" y="48.0">
+          <configuration>
+            <documentproperties>
+              <documentproperty defaultValue="" isDynamicCredential="false" isTradingPartner="false" name="Dynamic Document Property - DDP_MESSAGE_TS" persist="false" propertyId="dynamicdocument.DDP_MESSAGE_TS" shouldEncrypt="false">
+                <sourcevalues>
+                  <parametervalue key="9" valueType="date">
+                    <dateparameter dateparametertype="current" datetimemask="yyyy-MM-dd'T'HH:mm:ss.SSS'Z'"/>
+                  </parametervalue>
+                </sourcevalues>
+              </documentproperty>
+            </documentproperties>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape32.dragpoint1" toShape="shape40" x="2336.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="flowcontrol_icon" name="shape33" shapetype="flowcontrol" userlabel="" x="1008.0" y="48.0">
+          <configuration>
+            <flowcontrol chunkStyle="threadOnly" chunks="0" forEachCount="1"/>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape33.dragpoint1" toShape="shape3" x="1184.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="catcherrors_icon" name="shape34" shapetype="catcherrors" userlabel="" x="1776.0" y="48.0">
+          <configuration>
+            <catcherrors catchAll="true" retryCount="0"/>
+          </configuration>
+          <dragpoints>
+            <dragpoint identifier="default" name="shape34.dragpoint1" text="Try" toShape="shape10" x="1952.0" y="56.0"/>
+            <dragpoint identifier="error" name="shape34.dragpoint2" text="Catch" toShape="shape35" x="1952.0" y="216.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="notify_icon" name="shape35" shapetype="notify" userlabel="show full JSON to openAI" x="1968.0" y="208.0">
+          <configuration>
+            <notify disableEvent="true" enableUserLog="false" perExecution="false" title="">
+              <notifyMessage>{1}</notifyMessage>
+              <notifyMessageLevel>INFO</notifyMessageLevel>
+              <notifyParameters>
+                <parametervalue key="0" valueType="current"/>
+              </notifyParameters>
+            </notify>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape35.dragpoint1" toShape="unset" x="2144.0" y="218.0"/>
+          </dragpoints>
+        </shape>
+        <shape image="programcmd_icon" name="shape40" shapetype="programcmd" userlabel="add to DB" x="2352.0" y="48.0">
+          <configuration>
+            <programcmd perExecution="false">
+              <configuration valueType="sql">
+                <sqlparameter connection="d00f382c-c931-477d-a59c-77925de018d1">
+                  <sqltoexecute>INSERT INTO vector_replicates (namespace, vector_id, chunk_text, message_ts)
+VALUES (?,?,?,?);
+</sqltoexecute>
+                </sqlparameter>
+              </configuration>
+              <parameters>
+                <parametervalue key="0" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_NAMESPACE" propertyName="Dynamic Document Property - DDP_NAMESPACE"/>
+                </parametervalue>
+                <parametervalue key="1" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_vector_name" propertyName="Dynamic Document Property - DDP_vector_name"/>
+                </parametervalue>
+                <parametervalue key="2" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_outgoing_text" propertyName="Dynamic Document Property - DDP_outgoing_text"/>
+                </parametervalue>
+                <parametervalue key="3" valueType="track">
+                  <trackparameter defaultValue="" propertyId="dynamicdocument.DDP_MESSAGE_TS" propertyName="Dynamic Document Property - DDP_MESSAGE_TS"/>
+                </parametervalue>
+              </parameters>
+            </programcmd>
+          </configuration>
+          <dragpoints>
+            <dragpoint name="shape40.dragpoint1" toShape="shape8" x="2528.0" y="56.0"/>
+          </dragpoints>
+        </shape>
+      </shapes>
+    </process>
+  </bns:object>
+  <bns:processOverrides>
+    <Overrides>
+      <Connections>
+        <ConnectionOverride id="fef7d9f8-8fa4-493d-9cf9-1e58fa6bb31e">
+          <field id="url" label="URL" overrideable="false" xpath="HttpSettings/@url"/>
+          <field id="connectTimeout" label="Connect Timeout" overrideable="false" xpath="HttpSettings/@connectTimeout"/>
+          <field id="readTimeout" label="Read Timeout" overrideable="false" xpath="HttpSettings/@readTimeout"/>
+          <field id="useBasicAuth" label="Use Basic Authentication" overrideable="false" xpath="HttpSettings/@useBasicAuth"/>
+          <field id="user" label="User" overrideable="false" xpath="HttpSettings/AuthSettings/@user"/>
+          <field id="password" label="Password" overrideable="false" xpath="HttpSettings/AuthSettings/@password"/>
+          <field id="consumerKey" label="OAuth Consumer Key" overrideable="false" xpath="HttpSettings/OAuthSettings/@consumerKey"/>
+          <field id="accessToken" label="OAuth Access Token" overrideable="false" xpath="HttpSettings/OAuthSettings/@accessToken"/>
+          <field id="tokenSecret" label="OAuth Token Secret" overrideable="false" xpath="HttpSettings/OAuthSettings/@tokenSecret"/>
+          <field id="requestTokenURL" label="OAuth Request Token URL" overrideable="false" xpath="HttpSettings/OAuthSettings/@requestTokenURL"/>
+          <field id="authorizationURL" label="OAuth Authorization URL" overrideable="false" xpath="HttpSettings/OAuthSettings/@authorizationURL"/>
+          <field id="accessTokenURL" label="OAuth Access URL" overrideable="false" xpath="HttpSettings/OAuthSettings/@accessTokenURL"/>
+          <field id="consumerSecret" label="OAuth Consumer Secret" overrideable="false" xpath="HttpSettings/OAuthSettings/@consumerSecret"/>
+          <field id="realm" label="OAuth Realm" overrideable="false" xpath="HttpSettings/OAuthSettings/@realm"/>
+          <field id="signatureMethod" label="OAuth Signature Method" overrideable="false" xpath="HttpSettings/OAuthSettings/@signatureMethod"/>
+          <field id="clientauth" label="Use Client Authorization" overrideable="false" xpath="HttpSettings/SSLOptions/@clientauth"/>
+          <field id="clientsslalias" label="Client SSL Certificate" overrideable="false" xpath="HttpSettings/SSLOptions/@clientsslalias"/>
+          <field id="trustServerCert" label="Use Trusted SSL Certificate" overrideable="false" xpath="HttpSettings/SSLOptions/@trustServerCert"/>
+          <field id="trustedcertalias" label="Trust SSL Server Certificate" overrideable="false" xpath="HttpSettings/SSLOptions/@trustedcertalias"/>
+          <field id="clientId" label="OAuth2 Client ID" overrideable="false" xpath="HttpSettings/OAuth2Settings/credentials/@clientId"/>
+          <field id="clientSecret" label="OAuth2 Client Secret" overrideable="false" xpath="HttpSettings/OAuth2Settings/credentials/@clientSecret"/>
+          <field id="authTokenURL2" label="OAuth2 Authorization Token URL" overrideable="false" xpath="HttpSettings/OAuth2Settings/authorizationTokenEndpoint/@url"/>
+          <field id="accessTokenURL2" label="OAuth2 Access Token URL" overrideable="false" xpath="HttpSettings/OAuth2Settings/accessTokenEndpoint/@url"/>
+          <field id="scope" label="OAuth2 Scope" overrideable="false" xpath="HttpSettings/OAuth2Settings/scope"/>
+          <field id="accessToken2" label="OAuth2 Access Token" overrideable="false" xpath="HttpSettings/OAuth2Settings/credentials/@accessToken"/>
+          <field id="refreshAuthScheme" label="OAuth2 Refresh Authorization Scheme" overrideable="false" xpath="HttpSettings/OAuth2Settings/@refreshAuthScheme"/>
+          <field id="accessKeyId" label="Amazon AWS Access Key" overrideable="false" xpath="HttpSettings/AwsSettings/credentials/accessKeyId"/>
+          <field id="awsSecret" label="Amazon AWS Secret Key" overrideable="false" xpath="HttpSettings/AwsSettings/credentials/awsSecret"/>
+          <field id="awsRegion" label="Amazon AWS Region" overrideable="false" xpath="HttpSettings/AwsSettings/credentials/awsRegion"/>
+          <field id="customRegion" label="Custom Region" overrideable="false" xpath="HttpSettings/AwsSettings/credentials/customRegion"/>
+        </ConnectionOverride>
+      </Connections>
+      <PartnerOverrides/>
+      <Properties/>
+      <Extensions>
+        <ObjectDefinitions>
+          <unusedProfiles/>
+        </ObjectDefinitions>
+        <DataMaps>
+          <unusedMaps/>
+        </DataMaps>
+      </Extensions>
+      <CrossReferenceOverrides/>
+      <PGPOverrides/>
+      <DefinedProcessPropertyOverrides>
+        <OverrideableDefinedProcessPropertyComponent componentId="f01b53ab-9e9e-4310-9c59-26a9bb7841bb">
+          <OverrideableDefinedProcessPropertyValue key="c4b6906e-3a1e-4f3b-a5f3-59530b00c595" name="temperature" overrideable="false"/>
+          <OverrideableDefinedProcessPropertyValue key="14db9521-87fb-459d-99ff-e26fb5914dce" name="max_tokens" overrideable="false"/>
+          <OverrideableDefinedProcessPropertyValue key="a4f6cf48-1d15-4e4c-87f7-78386365f090" name="pinecone_api_key" overrideable="false"/>
+        </OverrideableDefinedProcessPropertyComponent>
+      </DefinedProcessPropertyOverrides>
+    </Overrides>
+  </bns:processOverrides>
+</Component>

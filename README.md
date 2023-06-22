@@ -5,6 +5,8 @@ Boomi JavaScript Chunking to Pinecone is a project that implements a JavaScript 
 ## Credits
 This project is inspired by the [vault-ai](https://github.com/pashpashpash/vault-ai) repository that uses Golang to parse.
 
+##Boomi write up here: https://community.boomi.com/s/article/Unlocking-the-Power-of-Boomi-OpenAI-and-Pinecone-Boomi-Chunking-for-Large-Data-Ingestion
+
 ## Features
 - JavaScript script for chunking and processing data
 - Integration with the Pinecone Vector Database

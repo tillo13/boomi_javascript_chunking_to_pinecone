@@ -1,0 +1,184 @@
+Howdy kind robot!  Please help me write an article for Boomi Community primarily about my github repository: https://github.com/tillo13/boomi_javascript_chunking_to_pinecone, and specifically the chunking mechanism here: https://github.com/tillo13/boomi_javascript_chunking_to_pinecone/blob/main/boomi_chunking.js I refactored from the vault-ai repo here: https://github.com/pashpashpash/vault-ai.  The end-result of that it is a part of an overall Boomi process that has its component xml documented here: https://github.com/tillo13/boomi_javascript_chunking_to_pinecone/blob/main/boomi_component.xml
+
+Start the article with my standard header: 
+<p>Author: <b>Andy Tillo</b></p>
+
+<p>Andy is the Senior Director of Innovation and Solutions for Boomi. He&#39;s based in Seattle and enjoys finding new ways to solve problems with integration.</p>
+
+<p>See all of Andy&#39;s articles here: <a href="https://boomi.to/andytillo" target="_blank">https://boomi.to/andytillo</a></p>
+
+My test chunking mechanism as a demo is chunking through the Lord of the Rings Series (~3 million characters) so feel free to very subtly use witty references to Lord of the Rings when appropriate; don't overuse the references though.
+
+Effectively I want to tell the story about how Boomi can ingest a large payload that can be of any format, and show a user how by chunking out the data with this javascript from Boomi, that openai/chatGPT can create an embeddings vector out of it and stored in pinecone.  
+
+The outcome of javascript is that it creates manageable pieces that can then be passed into an OpenAI connector from boomi (reference this: https://discover.boomi.com/solutions/connect-with-chatgpt to download it) into the embeddings endpoint.  From there, it then passes directly into a Pinecone.io index, and creates a lord_of_the_rings namespace in pinecone, which then per the javascript, chunks the text into blocks of 750 characters (DDP_max_characters) and ultimately saves each chunk into a pinecone vector, that on completion has now 4176 "chunks" of data about the book.  
+
+Here is the javascript specifically to use the <pre> tags on to talk about it: load("nashorn:mozilla_compat.js");
+importClass(com.boomi.execution.ExecutionUtil);
+importClass(java.io.ByteArrayInputStream);
+importClass(java.io.ByteArrayOutputStream);
+importClass(java.io.OutputStreamWriter);
+importClass(java.nio.charset.StandardCharsets);
+importClass(java.util.Properties);
+
+var logger = java.util.logging.Logger.getLogger("com.boomi.process.script");
+var csvOutput = new java.lang.StringBuilder();
+var csvDelimiter = ",";
+
+function escapeSlackJson(input) {
+    input = input.replace(/["“”]/g, "'");
+    input = input.replace(/[‘’]/g, "'");
+    input = input.replace(/[—–]/g, "-");
+    input = input.replace(/…/g, "...");
+    return input.replace(/\\/g, '\\\\')
+        .replace(/\n/g, '\\n')
+        .replace(/\r/g, '')
+        .replace(/\s+/g, ' ');
+}
+
+function generateStartingName(namespace) {
+    var abbreviation = namespace.split(/_|-|\s+/).map(function(word) {
+        return word.charAt(0);
+    }).join('');
+
+    if (abbreviation.length < 3) {
+        abbreviation += new Array(3 - abbreviation.length + 1).join("_");
+    }
+
+    if (abbreviation === "") {
+        abbreviation = "undefined";
+    }
+
+    return abbreviation;
+}
+
+try {
+    for (var i = 0; i < dataContext.getDataCount(); i++) {
+        var is = dataContext.getStream(i);
+        var props = dataContext.getProperties(i);
+
+        var propValue = props.getProperty("document.dynamic.userdefined.DDP_incoming_text");
+
+        if (!propValue || propValue.trim() === "") {
+            propValue = "default";
+        }
+
+        propValue = escapeSlackJson(propValue);
+        propValue = propValue.replace(/[\r\n]+/g, ' ');
+
+        var maxCharsValue = props.getProperty("document.dynamic.userdefined.DDP_max_characters");
+        var MaxCharsPerChunk = 1500;
+        if (!isNaN(maxCharsValue) && parseInt(maxCharsValue) >= 1) {
+            MaxCharsPerChunk = parseInt(maxCharsValue);
+        }
+
+        var namespace = props.getProperty("document.dynamic.userdefined.DDP_NAMESPACE");
+        if (!namespace || namespace.trim() === "") {
+            namespace = "undefined";
+        }
+        var startingName = generateStartingName(namespace);
+
+        var chunks = [];
+
+        function splitText() {
+            for (var index = 0; index < propValue.length; index += MaxCharsPerChunk) {
+                chunks.push({
+                    model: "text-embedding-ada-002",
+                    input: propValue.slice(index, index + MaxCharsPerChunk),
+                });
+            }
+        }
+
+        if (MaxCharsPerChunk === 1 || !propValue.match(/[.!?]/g)) {
+            splitText();
+        } else {
+            try {
+                var sentences = propValue.match(/[^.!?]+[.!?]+/g);
+
+                if (sentences == null) {
+                    splitText();
+                } else {
+                    var chunkStart = 0;
+                    while (chunkStart < sentences.length) {
+                        var charCount = 0;
+                        var chunkText = "";
+                        var chunkSentences = 0;
+
+                        for (var j = chunkStart; j < sentences.length && charCount < MaxCharsPerChunk; j++) {
+                            var sentence = sentences[j];
+                            var sentenceCharCount = sentence.length;
+
+                            if (sentenceCharCount > MaxCharsPerChunk) {
+                                continue;
+                            }
+
+                            if (charCount + sentenceCharCount <= MaxCharsPerChunk) {
+                                charCount += sentenceCharCount;
+                                chunkText += " " + sentence;
+                                chunkSentences++;
+                            } else {
+                                break;
+                            }
+                        }
+
+                        var trimmedText = chunkText.trim();
+
+                        if (trimmedText.length > 0) {
+                            chunks.push({
+                                model: "text-embedding-ada-002",
+                                input: trimmedText,
+                            });
+                        }
+
+                        chunkStart += chunkSentences;
+                    }
+                }
+            } catch (e) {
+                splitText();
+            }
+        }
+
+        var runningInputLength = 0;
+
+        for (var chunkIndex = 0; chunkIndex < chunks.length; chunkIndex++) {
+            var chunk = chunks[chunkIndex];
+            var jsonPayload = JSON.stringify(chunk);
+            var byteArray = new java.lang.String(jsonPayload).getBytes(StandardCharsets.UTF_8);
+            var chunkStream = new ByteArrayInputStream(byteArray);
+
+            var outputProps = new java.util.Properties();
+            outputProps.put("document.dynamic.userdefined.DDP_outgoing_text", chunk.input);
+            // Add DDP_vector_name property with the new naming convention using startingName and runningInputLength
+            var vectorId = startingName + "-" + (chunkIndex + 1) + "-" + runningInputLength;
+            outputProps.put("document.dynamic.userdefined.DDP_vector_name", vectorId);
+
+            dataContext.storeStream(chunkStream, outputProps);
+
+            runningInputLength += chunk.input.length;
+        }
+    }
+} catch (error) {
+    java.lang.System.err.println("An error occurred during script execution: " + error);
+}
+
+Here is a sample JSON payload the javascript creates that boomi passes to pinecone you can reference (keep the format, don't invent when showing) and I can add a screenshot: 
+[{"vectors":{"lotr-4097-2850877":{"id":"lotr-4097-2850877","values":[0.00285741943,-0.0175696965,0.00252932659...-0.0121996906,-0.0259661917],"metadata":{"chunk_text":"It had also spread north up the Anduin, occupying the lands west of the River and east of the mountains as far as the Gladden Fields.  At the time of the War of the Ring at the end of the age these were still its bounds as a native tongue, though large parts of Eriador were now deserted, and few Men dwelt on the shores of the Anduin between the Gladden and Rauros.  A few of the ancient Wild Men still lurked in the Dru ́adan Forest in Ano ́rien; and in the hills of Dunland a remnant lingered of an old people, the former inhabitants of much of Gondor.  These clung to their own lan- guages; while in the plains of Rohan there dwelt now a Northern people, the Rohirrim, who had come into that land some five hundred years earlier.","message_ts":"2023-06-22T02:44:10.811Z"}}},"namespace":"lord_of_the_rings"}]
+
+Finally, after it chunks through each section (can add another image here), I created a query mechanism that allows a user to ask a question about the book, pass it to the openai embeddings endpoint (https://platform.openai.com/docs/guides/embeddings), then immediately into the pinecone vector as a semantic search with a topK of 15, and on return of those similar values, I take all 15 of them, and pass that value into openai's chat completion endpoint to deduce if that data from the book, helps solve the query from the original user.  This is where I'd push the idea of art-of-the-possible to the reader.  This is just chunking through a book to get this data, but think of the real-world use cases of your own data that this would be valuable to use.
+
+My author style and tone can from https://boomi.to/pGPT can be described as engaging, conversational, and informative with a touch of humor. The writer's personality appears approachable, knowledgeable, and enthusiastic about the subject matter. Intonation is dynamic, utilizing sentence variety to create rhythm and pacing within the text.
+
+In terms of word choice, I lean towards straightforward language with occasional use of jargon or technical terms relevant to the topic. Literary devices are not prominent in this piece; however, there are sporadic uses of parallelism to enhance the writing style.
+
+Humor is evident in this writing - A combination of situational humor and witty commentary lends a lighter tone to an otherwise technical subject matter.
+
+Here is a sample of the writing, and feel free to reference it in the article if folks want more info: https://community.boomi.com/s/article/ChatGPT-and-Boomi
+
+The article formatting needs to be in HTML-formatted output.  For the content, focus primarily on the boomi_chunking.js file and its function.  Call out specific code pieces with <pre> tags as you describe what is happening in the code.  I can add screenshots of the Boomi processes, or outputs as you see fit, add in your response a [add screenshot of the above callout here] to tell me where an image might fit best.
+
+
+Let's take an iterative approach here and not pen the entire article to start.  Respond with only the HTML formatted heading, and the introduction paragraph citing what we're going to be exploring, using these data points.  Be verbose, and understand the audience is mostly Boomi customers interested in exploring art-of-the-possible solutions.  Thank you.
+
+
+
+Respond with only the HTML formatted article, using these data points.  Thank you.
